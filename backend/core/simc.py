@@ -23,8 +23,6 @@ class SimcClient:
         os.makedirs(self.inputs_dir, exist_ok=True)
         self.output_filter = SafeOutputFilter()
 
-    import aiofiles  # For async file reading
-
     async def stream_simulation(self, input_text: str) -> AsyncGenerator[dict, None]:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4())[:8]

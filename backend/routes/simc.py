@@ -72,7 +72,6 @@ async def stream_simulation(
         print(f"Starting simulation for client {client_id}")
         
         # Stream simulation output
-        # Stream simulation output
         try:
             async for output in simc_client.stream_simulation(decoded_input):
                 msg_type = output.get("type")
