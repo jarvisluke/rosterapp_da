@@ -72,13 +72,45 @@ async def stream_simulation(
         print(f"Starting simulation for client {client_id}")
         
         # Stream simulation output
+        # Stream simulation output
         try:
             async for output in simc_client.stream_simulation(decoded_input):
-                print(f"Streaming output: {output.get('type')} - {output.get('content', '')[:50]}...")
-                success = await websocket_manager.send_message(client_id, output)
+                msg_type = output.get("type")
+                content = output.get("content")
+                progress = output.get("progress", None)
+
+                if msg_type == "stdout":
+                    # Send progress update
+                    success = await websocket_manager.send_message(client_id, {
+                        "type": "progress",
+                        "content": content,
+                        "progress": progress
+                    })
+                elif msg_type == "stderr":
+                    success = await websocket_manager.send_message(client_id, {
+                        "type": "error",
+                        "content": content
+                    })
+                elif msg_type == "error":
+                    success = await websocket_manager.send_message(client_id, {
+                        "type": "error",
+                        "content": content
+                    })
+                elif msg_type == "result":
+                    # Send HTML as "output"
+                    success = await websocket_manager.send_message(client_id, {
+                        "type": "output",
+                        "content": content
+                    })
+                    # Then send "complete"
+                    await websocket_manager.send_message(client_id, {
+                        "type": "complete"
+                    })
+
                 if not success:
                     print(f"Failed to send message to {client_id}, client likely disconnected")
                     break
+
         except Exception as e:
             print(f"Error during simulation streaming: {e}")
             await websocket_manager.send_message(client_id, {

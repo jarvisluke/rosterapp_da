@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Modal, Button, ProgressBar, Alert } from 'react-bootstrap';
 
-const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) => {
+const StreamingSimulationDisplay = ({ simulationInput, show, onCancel, onComplete }) => {
   const [output, setOutput] = useState([]);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -10,7 +10,8 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
   const [connectionLogs, setConnectionLogs] = useState([]);
   const socketRef = useRef(null);
   const outputContainerRef = useRef(null);
-  
+  const [retryTrigger, setRetryTrigger] = useState(0);
+
   const addLog = (message, type = 'info') => {
     console.log(`[WebSocket ${type}]:`, message);
     const timestamp = new Date().toISOString();
@@ -18,32 +19,29 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
   };
 
   useEffect(() => {
-    // Log websocket creation
+    if (!show) return; // Only open socket if modal is visible
+
     addLog('Creating WebSocket connection...', 'init');
     
-    // Determine the correct WebSocket URL
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = "localhost:8000";
     const url = `${protocol}//${host}/api/simulate/stream`;
-    
+
     addLog(`Connecting to: ${url}`, 'init');
-    
-    // Create WebSocket connection
+
     const socket = new WebSocket(url);
     socketRef.current = socket;
-    
-    // Log socket properties
+
     addLog(`Socket created with readyState: ${socket.readyState}`, 'init');
     addLog(`Socket binary type: ${socket.binaryType}`, 'init');
     addLog(`Socket protocol: ${socket.protocol || 'none'}`, 'init');
     addLog(`Socket extensions: ${socket.extensions || 'none'}`, 'init');
-    
-    socket.onopen = (event) => {
+
+    socket.onopen = () => {
       addLog('WebSocket connection opened', 'success');
       addLog(`readyState: ${socket.readyState}`, 'success');
       setStatus('connected');
-      
-      // Send the simulation input once connected
+
       try {
         const payload = JSON.stringify({ simc_input: btoa(simulationInput) });
         addLog(`Sending payload (length: ${payload.length})`, 'info');
@@ -54,12 +52,12 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
         setError(`Failed to send simulation input: ${err.message}`);
       }
     };
-    
+
     socket.onmessage = (event) => {
       try {
         addLog(`Received message (size: ${event.data.length})`, 'data');
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'error') {
           addLog(`Error from server: ${data.content}`, 'error');
           setError(data.content);
@@ -70,20 +68,13 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
           setResultUrl(data.content);
           fetchResult(data.content);
         } else {
-          // Log progress updates less frequently to reduce noise
           if (data.progress && data.progress % 10 < 1) {
             addLog(`Progress update: ${Math.round(data.progress)}%`, 'progress');
           }
-          
-          // Append output
           setOutput(prev => [...prev, data]);
-          
-          // Update progress if available
           if (data.progress) {
             setProgress(data.progress);
           }
-          
-          // Auto-scroll to bottom
           if (outputContainerRef.current) {
             outputContainerRef.current.scrollTop = outputContainerRef.current.scrollHeight;
           }
@@ -94,7 +85,7 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
         setError(`Failed to parse server message: ${err.message}`);
       }
     };
-    
+
     socket.onerror = (event) => {
       addLog('WebSocket error occurred', 'error');
       addLog(`readyState: ${socket.readyState}`, 'error');
@@ -102,19 +93,18 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
       setError('Connection error. Check console for details.');
       setStatus('error');
     };
-    
+
     socket.onclose = (event) => {
       addLog(`WebSocket connection closed (code: ${event.code}, reason: ${event.reason || 'none'})`, 'info');
       addLog(`Was clean? ${event.wasClean ? 'Yes' : 'No'}`, 'info');
       addLog(`Final readyState: ${socket.readyState}`, 'info');
-      
+
       if (status !== 'complete' && status !== 'error') {
         setError(`Connection closed unexpectedly (code: ${event.code}, reason: ${event.reason || 'Not provided'})`);
         setStatus('error');
       }
     };
-    
-    // Cleanup function
+
     return () => {
       addLog('Component unmounting, closing WebSocket', 'cleanup');
       if (socket) {
@@ -126,8 +116,8 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
         }
       }
     };
-  }, [simulationInput]);
-  
+  }, [simulationInput, show, retryTrigger]);
+
   const fetchResult = async (resultPath) => {
     addLog(`Fetching result from: ${resultPath}`, 'info');
     try {
@@ -136,7 +126,6 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
         addLog(`Failed to fetch result: ${response.status} ${response.statusText}`, 'error');
         throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
       }
-      
       const htmlContent = await response.text();
       addLog(`Result fetched successfully (size: ${htmlContent.length})`, 'success');
       onComplete(htmlContent);
@@ -147,28 +136,20 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
       setStatus('error');
     }
   };
-  
+
   const handleRetryConnection = () => {
     addLog('Manually retrying connection', 'info');
-    // Close existing socket if open
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+    if (socketRef.current && (socketRef.current.readyState === WebSocket.OPEN)) {
       socketRef.current.close(1000, 'Manual reconnect');
     }
-    
     setStatus('connecting');
     setError(null);
     setOutput([]);
     setProgress(0);
-    
-    // Create new socket with same input
-    // This will re-trigger the useEffect
     setConnectionLogs([]);
-    setTimeout(() => {
-      // Force re-render by setting state again
-      setStatus('reconnecting');
-    }, 100);
+    setRetryTrigger(rt => rt + 1);
   };
-  
+
   const formatOutput = (data) => {
     if (data.type === 'stdout') {
       return <div key={`line-${output.indexOf(data)}`} className="text-light">{data.content}</div>;
@@ -177,20 +158,19 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
     }
     return null;
   };
-  
+
   const handleCancel = () => {
     addLog('User cancelled simulation', 'info');
     if (socketRef.current && (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING)) {
       socketRef.current.close(1000, 'User cancelled');
     }
-    onClose();
+    onCancel();
   };
 
-  // Show connection debugging interface when there's an error
   const showDebugInfo = status === 'error';
 
   return (
-    <Modal show={true} onHide={handleCancel} backdrop="static" size="lg">
+    <Modal show={show} onHide={handleCancel} backdrop="static" size="lg">
       <Modal.Header closeButton>
         <Modal.Title>SimC Simulation {status === 'error' ? '- Error' : status === 'complete' ? '- Complete' : '- Running'}</Modal.Title>
       </Modal.Header>
@@ -203,24 +183,24 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
             </Button>
           </Alert>
         )}
-        
+
         <div className="d-flex flex-column mb-3">
           <div className="d-flex justify-content-between align-items-center mb-2">
             <span className="fw-bold">Status: {status.charAt(0).toUpperCase() + status.slice(1)}</span>
             <span>{Math.round(progress)}%</span>
           </div>
-          <ProgressBar 
-            now={progress} 
-            variant={status === 'error' ? 'danger' : status === 'complete' ? 'success' : 'primary'} 
+          <ProgressBar
+            now={progress}
+            variant={status === 'error' ? 'danger' : status === 'complete' ? 'success' : 'primary'}
           />
         </div>
-        
-        <div 
+
+        <div
           ref={outputContainerRef}
-          className="bg-dark p-3 rounded" 
-          style={{ 
-            height: showDebugInfo ? '200px' : '400px', 
-            overflow: 'auto', 
+          className="bg-dark p-3 rounded"
+          style={{
+            height: showDebugInfo ? '200px' : '400px',
+            overflow: 'auto',
             fontFamily: 'monospace',
             fontSize: '0.875rem',
             whiteSpace: 'pre-wrap',
@@ -229,7 +209,7 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
         >
           {output.map(formatOutput)}
         </div>
-        
+
         {showDebugInfo && (
           <div className="mt-3">
             <h5>Connection Debug Info</h5>
@@ -253,15 +233,15 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
                 </tbody>
               </table>
             </div>
-            
+
             <div className="mt-3">
               <h6>Current WebSocket State</h6>
               <ul className="list-group">
                 <li className="list-group-item d-flex justify-content-between align-items-center">
-                  ReadyState: 
+                  ReadyState:
                   <span className="badge bg-secondary">
-                    {socketRef.current ? 
-                      ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][socketRef.current.readyState] || socketRef.current.readyState : 
+                    {socketRef.current ?
+                      ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][socketRef.current.readyState] || socketRef.current.readyState :
                       'No Socket'}
                   </span>
                 </li>
@@ -273,7 +253,7 @@ const StreamingSimulationDisplay = ({ simulationInput, onClose, onComplete }) =>
                 </li>
               </ul>
             </div>
-            
+
             <div className="mt-3">
               <h6>Browser Info</h6>
               <ul className="list-group">

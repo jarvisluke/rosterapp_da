@@ -4,6 +4,7 @@ import os
 import asyncio
 from datetime import datetime
 from typing import Optional, AsyncGenerator
+import aiofiles
 
 from core.cache import cache_simc_result
 from core.output_filter import SafeOutputFilter
@@ -22,8 +23,9 @@ class SimcClient:
         os.makedirs(self.inputs_dir, exist_ok=True)
         self.output_filter = SafeOutputFilter()
 
+    import aiofiles  # For async file reading
+
     async def stream_simulation(self, input_text: str) -> AsyncGenerator[dict, None]:
-        """Run simulation with streaming output"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4())[:8]
         filename = f"simc_{timestamp}_{unique_id}"
@@ -78,10 +80,20 @@ class SimcClient:
                     "content": f"SimC exited with code {return_code}"
                 }
             else:
-                yield {
-                    "type": "complete",
-                    "content": output_file
-                }
+                # Read the HTML report and send it as 'result'
+                try:
+                    async with aiofiles.open(output_file, mode='r', encoding='utf-8') as f:
+                        html_content = await f.read()
+
+                    yield {
+                        "type": "result",
+                        "content": html_content
+                    }
+                except Exception as e:
+                    yield {
+                        "type": "error",
+                        "content": f"Failed to read output file: {str(e)}"
+                    }
 
         except Exception as e:
             yield {
@@ -91,6 +103,7 @@ class SimcClient:
         finally:
             if os.path.exists(input_file):
                 os.remove(input_file)
+
 
     def _extract_progress(self, line: str) -> Optional[float]:
         """Extract progress from SimC output lines"""
@@ -158,15 +171,8 @@ class SimcClient:
 simc_client = SimcClient()
 
 # Dependency injection function
-from fastapi import Request
+from fastapi import Request, WebSocket
 
-async def get_simc_client(request: Request) -> SimcClient:
-    """
-    Dependency injection function for SimcClient.
-    
-    This retrieves the SimcClient instance from the app state
-    that was created during startup.
-    """
-    if not hasattr(request.app.state, 'simc_client'):
-        request.app.state.simc_client = SimcClient()
-    return request.app.state.simc_client
+async def get_simc_client(websocket: WebSocket):
+    # Initialize or return your simc client, possibly using info from the websocket
+    return SimcClient()

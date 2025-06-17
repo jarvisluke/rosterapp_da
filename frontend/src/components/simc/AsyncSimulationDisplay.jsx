@@ -1,84 +1,106 @@
-import { useState, useEffect, useCallback } from 'react';
-import { apiClient, ApiError } from '../../util/api';
+import { useState, useEffect, useRef } from 'react';
 import SimulationReport from './SimulationReport';
 
-function AsyncSimulationDisplay({ jobId, onClose, onComplete }) {
+function AsyncSimulationDisplay({ simcInput, onClose, onComplete }) {
   const [status, setStatus] = useState(null);
   const [queuePosition, setQueuePosition] = useState(null);
   const [estimatedWait, setEstimatedWait] = useState(null);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
-
-  const checkStatus = useCallback(async () => {
-    try {
-      const data = await apiClient.get(`/api/simulate/status/${jobId}`, {
-        timeout: 10000,
-        retries: 3,
-        retryDelay: 1000
-      });
-      
-      setStatus(data.status);
-      setQueuePosition(data.queue_position);
-      setEstimatedWait(data.estimated_wait);
-
-      if (data.status === 'COMPLETED') {
-        try {
-          const resultContent = await apiClient.get(`/api/simulate/result/${jobId}`, {
-            timeout: 30000,
-            retries: 2
-          });
-          setResult(resultContent);
-          onComplete(resultContent);
-        } catch (resultError) {
-          console.error('Error fetching result:', resultError);
-          setError('Failed to load simulation result');
-        }
-      } else if (data.status === 'FAILED') {
-        setError(data.error || 'Simulation failed');
-      }
-    } catch (err) {
-      console.error('Error checking status:', err);
-      
-      if (err instanceof ApiError) {
-        if (err.isNetworkError) {
-          setError('Connection lost. Retrying...');
-        } else if (err.status === 404) {
-          setError('Simulation job not found');
-        } else {
-          setError(`Failed to check status: ${err.message}`);
-        }
-      } else {
-        setError('Unknown error occurred');
-      }
-    }
-  }, [jobId, onComplete]);
+  const wsRef = useRef(null);
 
   useEffect(() => {
-    let intervalId;
-    
-    if (status !== 'COMPLETED' && status !== 'FAILED' && !error) {
-      checkStatus();
-      intervalId = setInterval(checkStatus, 5000);
+    if (!simcInput) {
+      setError("No simulation input provided");
+      return;
     }
 
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
+    // Build WebSocket URL, adjust the host if needed
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${protocol}://${window.location.host}/api/simulate/stream`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+
+      // Send the initial message with base64 encoded simc_input
+      const payload = {
+        simc_input: btoa(simcInput)  // encode UTF-8 string to base64
+      };
+      ws.send(JSON.stringify(payload));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        // The backend sends {type, content, ...}
+        // Map backend data to frontend state updates
+
+        if (data.type === 'error') {
+          setError(data.content || "Simulation error");
+          return;
+        }
+
+        if (data.type === 'status') {
+          setStatus(data.content);
+          return;
+        }
+
+        if (data.type === 'queue_position') {
+          setQueuePosition(data.content);
+          return;
+        }
+
+        if (data.type === 'estimated_wait') {
+          setEstimatedWait(data.content);
+          return;
+        }
+
+        if (data.type === 'result') {
+          setStatus('COMPLETED');
+          setResult(data.content);
+          onComplete(data.content);
+          return;
+        }
+
+        // Optionally handle other types like logs or partial output here
+        // e.g. console.log('Log:', data.content);
+
+      } catch (err) {
+        console.error('Error parsing WebSocket message:', err);
+        setError('Error receiving simulation updates');
       }
     };
-  }, [status, error, checkStatus]);
+
+    ws.onerror = (event) => {
+      console.error('WebSocket error:', event);
+      setError('WebSocket connection error');
+    };
+
+    ws.onclose = (event) => {
+      console.log('WebSocket closed', event);
+      if (status !== 'COMPLETED' && !error) {
+        setError('Connection lost');
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [simcInput, onComplete]);
 
   const formatWaitTime = (seconds) => {
-    if (seconds < 60) {
-      return `${seconds} seconds`;
-    } else if (seconds < 3600) {
+    if (!seconds) return null;
+    if (seconds < 60) return `${seconds} seconds`;
+    if (seconds < 3600) {
       const minutes = Math.floor(seconds / 60);
       return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-    } else {
-      const hours = Math.floor(seconds / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-      return `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}`;
     }
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}`;
   };
 
   if (error) {
@@ -105,13 +127,7 @@ function AsyncSimulationDisplay({ jobId, onClose, onComplete }) {
   }
 
   if (status === 'COMPLETED' && result) {
-    return (
-      <SimulationReport 
-        htmlContent={result}
-        onClose={onClose}
-        jobId={jobId}
-      />
-    );
+    return <SimulationReport htmlContent={result} onClose={onClose} />;
   }
 
   return (
@@ -128,16 +144,9 @@ function AsyncSimulationDisplay({ jobId, onClose, onComplete }) {
                 <span className="visually-hidden">Loading...</span>
               </div>
             </div>
-            <h6>Status: {status}</h6>
-            {queuePosition > 0 && (
-              <p>Queue Position: {queuePosition}</p>
-            )}
-            {estimatedWait && (
-              <p>Estimated Wait: {formatWaitTime(estimatedWait)}</p>
-            )}
-            <small className="text-muted">
-              Job ID: {jobId}
-            </small>
+            <h6>Status: {status || 'Starting...'}</h6>
+            {queuePosition > 0 && <p>Queue Position: {queuePosition}</p>}
+            {estimatedWait && <p>Estimated Wait: {formatWaitTime(estimatedWait)}</p>}
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>
